@@ -11,33 +11,43 @@ Claude on another machine) can finish it.
 - `colegio/keys.py` — keyfile/pubkey/addr I/O, make_qr, gen_save_keys_addr
   (uses `pydoge.pubtoaddr`). No cryptos.
 - `colegio/imaging.py` — the image bit-codec + `read_image_data`. No cryptos.
-- `colegio/inscriptions.py` — **DONE (the money code).** `STATE_*` constants,
-  `mk_opreturn` (script via `pydoge.mk_opreturn`, rawtx-append kept), and
-  `Cadena` / `CadenaMulti` / `CadenaAtom` / `CadenaMultiAtom`. `_txid_of_serial`
-  dropped in favor of `pydoge.txhash`. No cryptos. Public names + method
-  surfaces match the monolith exactly.
+- `colegio/inscriptions.py` — the money code. `STATE_*` constants, `mk_opreturn`
+  (script via `pydoge.mk_opreturn`, rawtx-append kept), and `Cadena` /
+  `CadenaMulti` / `CadenaAtom` / `CadenaMultiAtom`. `_txid_of_serial` dropped for
+  `pydoge.txhash`.
+- `colegio/crypto.py`  ← colegio_tools.py ~999-1373. ECIES/AES box crypto + the
+  key-drop primitive: `shared_key`, `get_txn_pub_from_node`, `get_address_pubkeys`,
+  `_parse_multisig_redeem`, `array_dec_from_txn`, the `aes_*` helpers,
+  `build/read_aes_sealed_quipu`, `build/read_broadcast_quipu`, the keydrop
+  functions. ecies/pycryptodome/eth_keys/coincurve; depends on
+  `reading.read_quipu` + `imaging.read_image_data`. Turned out to need **no
+  cryptos at all** (the "a little cryptos" estimate was wrong).
+- `colegio/reading.py`  ← colegio_tools.py ~502-901. The pre-scan reader:
+  `get_all_transactions`, `extract_op_return`, `scan_accounts`,
+  `outputs_walk_index`, `read_strand`, `read_quipu`, `fetch_quipu_bytes`,
+  `identify_quipus`, `find_quipu_roots`, `find_pre_funded_quipu_roots`.
+  `node.rpc_request` + pandas. No cryptos.
 - `tests/test_pydoge_vs_cryptos.py` — proves pydoge ≡ cryptos byte-for-byte.
 - `tests/test_inscriptions.py` — the money-code gate: a **differential test**
   driving the old monolith classes (imported from `Colegio_Invisible`) and the
   new `inscriptions` classes through the identical API on identical inputs —
   including real on-chain `data/bodies/*.bin` payloads — asserting byte-identical
-  signed txs (make_tx) and identical txns + threaded txids (precompute). 17
-  tests green via the Colegio `.venv`.
+  signed txs (make_tx) and identical txns + threaded txids (precompute).
+- `tests/test_reading.py` — differential walk of a synthetic quipu frame
+  (extract_op_return, read_strand/read_quipu, identify/find roots) vs the monolith.
+- `tests/test_crypto.py` — the encrypted-quipu gate: deterministic primitives
+  (keydrop, pubkey parse, KDF) byte-identical to the monolith; the ECIES families
+  (AES-sealed, broadcast) proven **cross-decrypt** wire-compatible old↔new with
+  byte-identical structural headers.
 
-## Remaining modules (port in this order)
+## Packagify COMPLETE ✅ (2026-06-13)
 
-### 1. `colegio/crypto.py`  ← colegio_tools.py lines ~999-1373
-ECIES/AES box crypto: `shared_key`, `get_txn_pub_from_node`, `_strip_pub_prefix`,
-`get_address_pubkeys`, `_parse_multisig_redeem`, `array_dec_from_txn`, the `aes_*`
-helpers, `build/read_aes_sealed_quipu`, `build/read_broadcast_quipu`, and the
-keydrop functions. Uses ecies/pycryptodome (keep) + `node` + a little cryptos.
-
-### 2. `colegio/reading.py`  ← colegio_tools.py lines ~502-901
-The pre-scan reader: `get_all_transactions`, `extract_op_return`,
-`_process_transaction_row`, `scan_accounts`, `_build_spender_index_rpc`,
-`outputs_walk_index`, `read_strand`, `read_quipu`, `fetch_quipu_bytes`,
-`identify_quipus`, `find_quipu_roots`, `find_pre_funded_quipu_roots`. Uses
-`node.rpc_request` + pandas. Minimal/no cryptos.
+Every module of `colegio_tools.py` is now ported into the `colegio` package with
+`cryptos` fully swapped out for `pydoge`. No package module imports cryptos; it
+remains only a TEST-ONLY dep (the differential oracle). Full suite **33 passed**
+via the Colegio `.venv`. Public names + method/function surfaces match the
+monolith for every module. The monolith stays in `Colegio_Invisible` for the
+notebooks until the optional shim (below) lands.
 
 ## The cryptos → pydoge map (worked out; apply mechanically)
 
