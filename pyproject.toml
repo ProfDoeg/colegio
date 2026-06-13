@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "colegio"
+version = "0.0.1"
+description = "The Colegio Invisible quipu toolkit — read, write, and render quipu on Dogecoin"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "ProfDoeg / Colegio Invisible" }]
+dependencies = [
+    "pydoge",          # owned Dogecoin-tx layer (replaces cryptos)
+    "coincurve>=18",
+    "eciespy",         # ECIES box crypto
+    "pycryptodome",    # AES seal
+    "eth-keys",        # cinv keyfile loading
+    "requests",        # node RPC
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+# cryptos is a TEST-ONLY dependency for the migration period: the cross-check
+# that proves pydoge reproduces cryptos byte-for-byte. It leaves once trusted.
+test = ["pytest>=7", "cryptos==2.0.9"]
+
+[tool.setuptools.packages.find]
+include = ["colegio*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
