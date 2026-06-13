@@ -11,23 +11,28 @@ Claude on another machine) can finish it.
 - `colegio/keys.py` — keyfile/pubkey/addr I/O, make_qr, gen_save_keys_addr
   (uses `pydoge.pubtoaddr`). No cryptos.
 - `colegio/imaging.py` — the image bit-codec + `read_image_data`. No cryptos.
+- `colegio/inscriptions.py` — **DONE (the money code).** `STATE_*` constants,
+  `mk_opreturn` (script via `pydoge.mk_opreturn`, rawtx-append kept), and
+  `Cadena` / `CadenaMulti` / `CadenaAtom` / `CadenaMultiAtom`. `_txid_of_serial`
+  dropped in favor of `pydoge.txhash`. No cryptos. Public names + method
+  surfaces match the monolith exactly.
 - `tests/test_pydoge_vs_cryptos.py` — proves pydoge ≡ cryptos byte-for-byte.
+- `tests/test_inscriptions.py` — the money-code gate: a **differential test**
+  driving the old monolith classes (imported from `Colegio_Invisible`) and the
+  new `inscriptions` classes through the identical API on identical inputs —
+  including real on-chain `data/bodies/*.bin` payloads — asserting byte-identical
+  signed txs (make_tx) and identical txns + threaded txids (precompute). 17
+  tests green via the Colegio `.venv`.
 
 ## Remaining modules (port in this order)
 
-### 1. `colegio/inscriptions.py`  ← colegio_tools.py lines ~141-478  (MONEY CODE)
-Port: the `STATE_*` constants (141-153), `mk_opreturn` (159-189), and classes
-`Cadena`, `CadenaMulti`, `CadenaAtom`, `CadenaMultiAtom` (195-478), plus
-`_txid_of_serial` (search for it ~line 480). Uses `node.rpc_request` for
-broadcast. **This is the diamond's foundation — port carefully, test hardest.**
-
-### 2. `colegio/crypto.py`  ← colegio_tools.py lines ~999-1373
+### 1. `colegio/crypto.py`  ← colegio_tools.py lines ~999-1373
 ECIES/AES box crypto: `shared_key`, `get_txn_pub_from_node`, `_strip_pub_prefix`,
 `get_address_pubkeys`, `_parse_multisig_redeem`, `array_dec_from_txn`, the `aes_*`
 helpers, `build/read_aes_sealed_quipu`, `build/read_broadcast_quipu`, and the
 keydrop functions. Uses ecies/pycryptodome (keep) + `node` + a little cryptos.
 
-### 3. `colegio/reading.py`  ← colegio_tools.py lines ~502-901
+### 2. `colegio/reading.py`  ← colegio_tools.py lines ~502-901
 The pre-scan reader: `get_all_transactions`, `extract_op_return`,
 `_process_transaction_row`, `scan_accounts`, `_build_spender_index_rpc`,
 `outputs_walk_index`, `read_strand`, `read_quipu`, `fetch_quipu_bytes`,
