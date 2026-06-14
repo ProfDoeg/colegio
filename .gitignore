@@ -13,5 +13,9 @@ venv/
 .DS_Store
 *.swp
 
+# secrets / local config — never commit
+.env
+.env.*
+
 # test fixtures pulled from chain (regenerable, can be large)
 tests/vectors/*.bin
