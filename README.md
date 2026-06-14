@@ -1,33 +1,18 @@
 # colegio
 
-The **Colegio Invisible** quipu toolkit, rebuilt as a clean package — read,
-write, and render *quipu*: multi-strand inscriptions on the Dogecoin blockchain.
+The quipu toolkit of the Colegio Invisible.
 
-This is the rebuild. The original lives in
-[Colegio_Invisible](https://github.com/ProfDoeg/Colegio_Invisible) — a monorepo
-that grew a course, a book, dancer tooling, and the production code all in one
-place. `colegio` is just the production code, as an installable package, on a
-clean foundation:
+Multi-strand OP_RETURN inscription on Dogecoin. Read, write, render.
 
 ```
-  colegio   (this package — quipu: read · write · render · sale)
-     │ imports
-     ▼
-  pydoge    (owned Dogecoin-tx layer, replaces the fragile cryptos dependency)
-     │ imports
-     ▼
-  coincurve (libsecp256k1 ECDSA)
+colegio → pydoge → coincurve
 ```
 
-It carries no book and no dancer tooling — those stay in the original repo.
+Knots chain into strands; strands close into the diamond. Keys never touch the
+node — signing is client-side; the payload, opaque to everything below.
 
-## Status
-
-**Early — the rebuild is in progress.** The first thing proven here is the
-foundation swap: that **pydoge reproduces `cryptos` byte-for-byte** for every
-operation the toolkit uses (see `tests/test_pydoge_vs_cryptos.py`). `cryptos` is
-a test-only dependency for that migration cross-check; the package itself depends
-only on `pydoge`.
+`cryptos` was the old foundation: proven byte-identical, then cut. The package
+imports only `pydoge`.
 
 ## License
 
