@@ -77,3 +77,19 @@ def test_read_quipu_equals_monolith_on_real_corpus(corpus):
     for r in corpus["cat"]:
         root = r["root_txid"]
         assert reading.read_quipu(root, df_out) == old.read_quipu(root, df_out), root
+
+
+def test_quipuread_end_to_end_against_chain(corpus):
+    # quipuread fetches the root tx (for tag scripts) via RPC, so it needs a node
+    if not os.getenv("QUIPU_RPC_TESTS"):
+        pytest.skip("set QUIPU_RPC_TESTS=1 to run node-backed quipuread")
+    reading, df_out = corpus["reading"], corpus["df_out"]
+    for r in corpus["cat"][:6]:
+        q = reading.quipuread(r["root_txid"], df_out)
+        assert q["header"]["type"] == int(r["type_byte"], 16), r["root_txid"]
+        assert q["header"]["tone"] == int(r["tone"], 16), r["root_txid"]
+        # header.raw (cabeza strand) + body reassembles the on-chain blob
+        assembled = bytes.fromhex(q["header"]["raw"] + q["body"])
+        body_path = os.path.join(_CINV, "data", r["body_file"])
+        assert assembled == open(body_path, "rb").read(), r["root_txid"]
+        assert isinstance(q["tags"], list)

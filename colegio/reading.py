@@ -16,7 +16,7 @@ and `fetch_quipu_bytes` also work with no dataframe (RPC mode) for one-off reads
 
 import pandas as pd
 
-from . import node
+from . import node, envelope, tags
 
 
 def get_all_transactions(account_name, batch_size=10000):
@@ -318,6 +318,55 @@ def fetch_quipu_bytes(txid, max_walk=64):
 
     header_hex, body_hex = read_quipu(root)
     return bytes.fromhex(header_hex + body_hex)
+
+
+def quipuread(txid, df_outputs=None):
+    """The read contract: {header, body, tags} for a quipu given its root txid.
+
+    This is the Python reference for the fork's native `quipuread` RPC — the
+    executable spec and the differential oracle. Returns:
+      - header: the universal envelope {magic, version, type, tone, raw} — the
+        node parses only these; the client decodes title/fields per type.
+      - body:   the assembled body-strand bytes (hex), opaque to the node.
+      - tags:   chain-state of the root's tag outputs (see tags.classify).
+
+    df_outputs (a pre-scanned frame) accelerates the strand walk and the
+    spend lookups; without it everything is derived live from the node.
+    """
+    header_hex, body_hex = read_quipu(txid, df_outputs)
+    header = envelope.parse_envelope(bytes.fromhex(header_hex))
+
+    # tags need the root tx's output scripts/values (not in the frame) — one
+    # call — plus the spend-state of each output.
+    root_hex = node.rpc_request("getrawtransaction", [txid, 0])
+    if df_outputs is not None:
+        idx = outputs_walk_index(df_outputs)
+
+        def spend_of(t, v):
+            hit = idx["txout"].get(f"{t}:{v}")
+            return hit[0] if hit and hit[0] else None
+
+        def get_tx(spender):
+            # only _has_op_return is consulted; a 1-output shim suffices
+            return {"outs": [{"script": "6a"}]} if idx["txid_op"].get(spender) \
+                else {"outs": []}
+    else:
+        root_v = node.rpc_request("getrawtransaction", [txid, 1])
+        addrs = root_v["vout"][0].get("scriptPubKey", {}).get("addresses", [])
+        smap = _build_spender_index_rpc(addrs[0]) if addrs else {}
+
+        def spend_of(t, v):
+            return smap.get(f"{t}:{v}")
+
+        def get_tx(spender):
+            return node.rpc_request("getrawtransaction", [spender, 0])
+
+    classified = tags.classify_root_outputs(root_hex, spend_of, get_tx)
+    return {
+        "header": header,
+        "body": body_hex,
+        "tags": [c for c in classified if c["kind"] == "tag"],
+    }
 
 
 def identify_quipus(df_transactions, df_outputs):
