@@ -16,8 +16,10 @@ dependencies = [
     "eciespy",         # ECIES box crypto
     "pycryptodome",    # AES seal
     "eth-keys",        # cinv keyfile loading
+    "qrcode",          # keys.py — address/key QR rendering
     "requests",        # node RPC
     "python-dotenv",
+    "pandas",          # reading.py — the scanned-output dataframe walker
 ]
 
 [project.optional-dependencies]
