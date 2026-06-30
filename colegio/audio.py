@@ -43,14 +43,15 @@ TONE_RAGE      = 0x05
 TONE_FEAR      = 0x06
 TONE_GRIEF     = 0x07
 TONE_DEMONIC   = 0x0D
+TONE_NATURE    = 0x6E
 TONE_AI        = 0xA1
 TONE_HOPE      = 0xE5
 TONE_REVERENCE = 0xFF
 
 VALID_TONES = frozenset({
     TONE_ORDINARY, TONE_AFFECTION, TONE_SEEKING, TONE_PLAY, TONE_LUST,
-    TONE_RAGE, TONE_FEAR, TONE_GRIEF, TONE_DEMONIC, TONE_AI, TONE_HOPE,
-    TONE_REVERENCE,
+    TONE_RAGE, TONE_FEAR, TONE_GRIEF, TONE_DEMONIC, TONE_NATURE, TONE_AI,
+    TONE_HOPE, TONE_REVERENCE,
 })
 
 
@@ -75,6 +76,9 @@ CODEC_OPUS   = 0x10   # ogg/opus
 CODEC_MP3    = 0x11   # mp3
 CODEC_WAV    = 0x12   # WAV / PCM
 CODEC_FLAC   = 0x13   # flac
+# Composed-music recipe — a 'QM' module (instruments + a note timeline) rendered
+# by the music DSP, not a waveform. See colegio/music.py for the keyless codec.
+CODEC_MUSIC  = 0x20   # music
 
 # Canonical byte -> name map. THE dictionary; everything else is derived.
 CODEC_NAMES = {
@@ -85,6 +89,7 @@ CODEC_NAMES = {
     CODEC_MP3:    "mp3",
     CODEC_WAV:    "wav",
     CODEC_FLAC:   "flac",
+    CODEC_MUSIC:  "music",
 }
 
 # Reverse lookup: name -> byte.
