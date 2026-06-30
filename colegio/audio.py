@@ -70,7 +70,7 @@ def validate_tone(tone):
 # Speech vocoders (quipu-native bodies, decoded by the numpy DSP below):
 CODEC_STFT   = 0x00   # band-limited 8-bit STFT-magnitude vocoder
 CODEC_LPC    = 0x01   # LPC-10-style vocoder
-CODEC_CODEC2 = 0x02   # Codec2-700C (needs libcodec2)
+CODEC_CODEC2 = 0x02   # Codec2 (mode-aware, default 3200; needs libcodec2)
 # Opaque standard formats (the body is a real container/bitstream; meta empty):
 CODEC_OPUS   = 0x10   # ogg/opus
 CODEC_MP3    = 0x11   # mp3
@@ -694,22 +694,27 @@ def decode_voice_lpc(header_bytes, body_bytes):
 # DSP — Codec2 700C (codec 0x02) — lazy/optional (needs libcodec2 + pycodec2)
 # ===========================================================================
 
-C2_FRAME = 320      # samples per Codec2 700C frame (40 ms @ 8 kHz)
-C2_BPF = 4          # bytes per frame
-C2_MODE = 700       # pycodec2 mode integer for 700C
+C2_DEFAULT_MODE = 3200   # inscriptions use mode 3200 (cleaner speech, ~400 B/s)
+C2_FRAME = 320      # legacy 700C frame size (kept for back-reference)
+C2_BPF = 4          # legacy 700C bytes/frame
+C2_MODE = 700       # legacy 700C mode integer
 
 
-def _get_c2():
+def _get_c2(mode=C2_DEFAULT_MODE):
     """Lazy-import the Codec2 binding so audio.py still loads (and the 0x00 /
-    0x01 codecs still work) on machines without libcodec2."""
+    0x01 codecs still work) on machines without libcodec2. Returns
+    (codec, samples_per_frame, bytes_per_frame) — frame geometry queried per
+    mode, not hardcoded (700C = 320 samp/4 B; 3200 = 160 samp/8 B)."""
     import pycodec2
-    return pycodec2.Codec2(C2_MODE)
+    c2 = pycodec2.Codec2(int(mode))
+    return c2, c2.samples_per_frame(), (c2.bits_per_frame() + 7) // 8
 
 
-def encode_sound_codec2(audio_samples, title="", tone=TONE_ORDINARY):
-    """Encode mono 8 kHz audio with Codec2 700C into a sound container
-    (type 0x07, codec 0x02). Needs libcodec2 + pycodec2. Returns
-    (header, body); codec_meta carries n_frames (u16)."""
+def encode_sound_codec2(audio_samples, *, mode=C2_DEFAULT_MODE, title="",
+                        tone=TONE_ORDINARY):
+    """Encode mono 8 kHz audio with Codec2 (`mode`, default 3200) into a sound
+    container (type 0x07, codec 0x02). Needs libcodec2 + pycodec2. Returns
+    (header, body); codec_meta = mode:u16 + n_frames:u32 (big-endian)."""
     x = np.asarray(audio_samples, dtype=np.float32)
     if x.ndim != 1:
         raise ValueError("audio must be mono")
@@ -720,30 +725,29 @@ def encode_sound_codec2(audio_samples, title="", tone=TONE_ORDINARY):
         x = x / peak
     x_i16 = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
 
-    # Pad to whole frames
-    n_frames = max(1, (len(x_i16) + C2_FRAME - 1) // C2_FRAME)
-    padded = np.zeros(n_frames * C2_FRAME, dtype=np.int16)
+    c2, spf, _bpf = _get_c2(mode)
+    n_frames = max(1, (len(x_i16) + spf - 1) // spf)
+    if n_frames > 0xFFFFFFFF:
+        raise ValueError("utterance too long: n_frames must fit uint32")
+    padded = np.zeros(n_frames * spf, dtype=np.int16)
     padded[:len(x_i16)] = x_i16
-    if n_frames > 65535:
-        raise ValueError("utterance too long: n_frames must fit uint16")
 
-    c2 = _get_c2()
     chunks = bytearray()
     for i in range(n_frames):
-        frame = padded[i * C2_FRAME:(i + 1) * C2_FRAME]
-        chunks.extend(c2.encode(frame))
+        chunks.extend(c2.encode(padded[i * spf:(i + 1) * spf]))
 
     duration_ms = int(round(len(x_i16) / SR * 1000))
     return build_sound_quipu(
         CODEC_CODEC2, bytes(chunks),
         sample_rate=SR, channels=1, duration_ms=duration_ms,
-        codec_meta=pack_frames_meta(n_frames),
+        codec_meta=struct.pack(">HI", int(mode), n_frames),
         title=title, tone=tone,
     )
 
 
 def decode_voice_c2(header_bytes, body_bytes):
-    """Decode a sound container (type 0x07, codec 0x02 = Codec2 700C)."""
+    """Decode a sound container (type 0x07, codec 0x02 = Codec2). Mode-aware:
+    codec_meta = mode:u16 + n_frames:u32 (6 B); a legacy 2-byte meta = 700C."""
     rec = read_sound_quipu(header_bytes, body_bytes)
     if rec["codec"] != CODEC_CODEC2:
         raise ValueError(
@@ -752,28 +756,33 @@ def decode_voice_c2(header_bytes, body_bytes):
         )
     tone = rec["tone"]
     title = rec["title"]
-    n_frames = unpack_frames_meta(rec["codec_meta"])
+    meta = rec["codec_meta"]
+    if len(meta) >= 6:                          # mode:u16 + n_frames:u32
+        mode, n_frames = struct.unpack(">HI", meta[:6])
+    else:                                       # legacy 2-byte n_frames -> 700C
+        mode, n_frames = 700, unpack_frames_meta(meta)
     body_bytes = rec["body"]
 
-    expected = n_frames * C2_BPF
+    c2, spf, bpf = _get_c2(mode)
+    expected = n_frames * bpf
     if len(body_bytes) < expected:
         raise ValueError(f"body too short: {len(body_bytes)} < {expected}")
 
-    c2 = _get_c2()
-    audio_i16 = np.zeros(n_frames * C2_FRAME, dtype=np.int16)
+    audio_i16 = np.zeros(n_frames * spf, dtype=np.int16)
     for i in range(n_frames):
-        chunk = body_bytes[i * C2_BPF:(i + 1) * C2_BPF]
-        audio_i16[i * C2_FRAME:(i + 1) * C2_FRAME] = c2.decode(chunk)
+        chunk = body_bytes[i * bpf:(i + 1) * bpf]
+        audio_i16[i * spf:(i + 1) * spf] = c2.decode(chunk)
 
     audio_f = audio_i16.astype(np.float32) / 32768.0
     return audio_f, {
         "title": title,
         "tone": tone,
         "codec": 0x02,
+        "mode": mode,
         "n_frames": n_frames,
-        "duration_s": n_frames * C2_FRAME / SR,
+        "duration_s": n_frames * spf / SR,
         "sample_rate": SR,
-        "bitrate_bps": 700,
+        "bitrate_bps": mode,
     }
 
 
