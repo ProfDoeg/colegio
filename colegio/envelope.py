@@ -18,7 +18,8 @@ title/fields per type. This is the `header` of `quipuread`.
 """
 
 MAGIC = b"\xc1\xdd"
-VERSION = b"\x00\x01"
+VERSION_V1 = 0x0001
+VERSION_V2 = 0x0002
 
 
 def parse_envelope(header_bytes):
@@ -28,13 +29,19 @@ def parse_envelope(header_bytes):
     plus the raw header-strand hex. Title and fields are deliberately absent:
     they are type-specific, and the client decodes `raw` per `type`.
 
+    The magic is TWO bytes; the version is data at bytes 2..3 (u16-BE) and
+    every version parses — deciding which versions to dispatch is a later
+    layer's job (canonical/envelope.py, c1dd0002 §3). The old 4-byte
+    MAGIC+VERSION compare rejected every non-v1 blob as bad magic.
+
     Raises ValueError if the magic is missing or the header is too short.
     """
     b = bytes(header_bytes)
-    if b[:4] != MAGIC + VERSION:
-        raise ValueError("not a quipu (c1dd0001 magic missing from header)")
     if len(b) < 6:
         raise ValueError(f"header too short: {len(b)} bytes (need >= 6)")
+    if b[:2] != MAGIC:
+        raise ValueError(
+            f"not a quipu (magic c1dd missing; got {b[:2].hex()})")
     return {
         "magic": b[:2].hex(),
         "version": int.from_bytes(b[2:4], "big"),
