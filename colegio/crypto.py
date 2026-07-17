@@ -1,26 +1,34 @@
 """crypto — ECIES box crypto, AES seal, and the key-drop primitive.
 
-The encrypted-quipu layer. Two encrypted families live under header byte 4 = 0x0e:
+The encrypted-quipu layer (family 0x0e). Since the July 2026 wire
+reconciliation (`Colegio_Invisible/docs/design/encrypted-wire-reconciliation.md`)
+there is ONE implementation of the 0x0e wire format —
+`Colegio_Invisible/canonical/encrypted.py` — and this module, like the
+monolith's `colegio_tools`, is a thin surface over it:
 
-    0x0e 0x03 ...    Broadcast: N per-recipient ECDH-locked session-key copies,
-                     then an AES-encrypted body (in use on chain).
-    0x0e 0xae ...    AES-sealed: no envelopes. Body is AES-encrypted with a key
-                     supplied out-of-band (passphrase via SHA-256, or raw 32-byte
-                     key). Wraps any plaintext inner type.
+    build_*  emit the CANONICAL v1 layout (0e <tone> ae/ec/0d …). The
+             pre-canonical nb17/nb18 layouts are never written again.
+    read_*   accept BOTH eras — the four pre-canonical inscriptions
+             (d0209a, d68175 broadcasts; 89b51b, f278e4 keydrops) stay
+             legible forever via the canonical module's legacy readers.
 
-The 0x0e 0x0e 0x0d "key drop" releases the AES key for a previously-broadcast
-0e 03 quipu, or for a 0e ae quipu — same primitive.
+The canonical module is resolved through the same seam the invisible
+client uses: `$COLEGIO_INVISIBLE` (defaulting to the sibling checkout).
+The node-backed helpers (pubkey recovery, address scanning) and the raw
+AES byte primitives are self-contained and need no seam.
 
 ECDH/HKDF via coincurve; symmetric crypto via eciespy (`ecies.sym_*`) and
-pycryptodome's HKDF. Keys are eth_keys PrivateKey/PublicKey objects. No cryptos.
+pycryptodome's HKDF. Keys are eth_keys PrivateKey/PublicKey objects
+(coincurve objects also accepted). No cryptos.
 """
 
 import hashlib
+import os
+import sys
 
 import coincurve
 import ecies
 import eth_keys
-from coincurve.utils import get_valid_secret
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
 
@@ -29,6 +37,41 @@ from .imaging import read_image_data
 from .reading import read_quipu
 
 AES_KEY_BYTES_LEN = 32
+
+
+def _enc():
+    """The canonical encrypted module — the ONE 0x0e wire implementation
+    (lazy import via the `$COLEGIO_INVISIBLE` seam)."""
+    cinv = os.environ.get("COLEGIO_INVISIBLE") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "Colegio_Invisible")
+    canon = os.path.join(cinv, "canonical")
+    if not os.path.isdir(canon):
+        raise RuntimeError(
+            f"canonical encrypted module not found (looked in {canon}); "
+            f"set COLEGIO_INVISIBLE to the Colegio_Invisible checkout")
+    if canon not in sys.path:
+        sys.path.insert(0, canon)
+    import encrypted as E
+    return E
+
+
+def _cc_priv(priv):
+    """eth_keys PrivateKey / coincurve.PrivateKey / 32 bytes → coincurve."""
+    if isinstance(priv, coincurve.PrivateKey):
+        return priv
+    if hasattr(priv, "to_bytes"):
+        return coincurve.PrivateKey(priv.to_bytes())
+    return coincurve.PrivateKey(bytes(priv))
+
+
+def _cc_pub(pub):
+    """eth_keys PublicKey / coincurve.PublicKey / serialized bytes → coincurve."""
+    if isinstance(pub, coincurve.PublicKey):
+        return pub
+    if hasattr(pub, "to_compressed_bytes"):
+        return coincurve.PublicKey(pub.to_compressed_bytes())
+    return coincurve.PublicKey(bytes(pub))
 
 
 # --- ECIES helpers ----------------------------------------------------------
@@ -231,155 +274,125 @@ def aes_decrypt_bytes(cipher_bytes, password_or_key):
     return ecies.sym_decrypt(key=_coerce_aes_key(password_or_key), cipher_text=cipher_bytes)
 
 
-def build_aes_sealed_quipu(inner_header_bytes, inner_body_bytes, password_or_key):
-    """Wrap a plaintext quipu into the 0x0e 0xae AES-sealed form.
+def build_aes_sealed_quipu(inner_header_bytes, inner_body_bytes, password_or_key,
+                           *, title="", tone=0x00):
+    """AES-seal a plaintext quipu. Emits the CANONICAL layout
+    (0e <tone> ae <variant>, body = AES(key, length-framed inner header+body));
+    the whole inner quipu, header included, is sealed — unlike the old
+    splice, which left the inner header in cleartext.
 
-    The wrap is structural: insert `0e ae` between the c1dd0001 magic+version
-    and the inner type byte. Title (the |…| field) and all inner-type
-    structural fields stay in their relative positions, just shifted by
-    two bytes. The unwrap is symmetric.
-
+    `password_or_key`: 32-byte raw key, or passphrase string (SHA-256 KDF).
     Returns (outer_header_bytes, outer_body_bytes).
     """
-    if inner_header_bytes[:4] != b"\xc1\xdd\x00\x01":
-        raise ValueError("inner header must start with c1dd 0001")
-    outer_header = b"\xc1\xdd\x00\x01\x0e\xae" + inner_header_bytes[4:]
-    outer_body = aes_encrypt_bytes(inner_body_bytes, password_or_key)
-    return outer_header, outer_body
+    E = _enc()
+    key = password_or_key if isinstance(password_or_key, str) else bytes(password_or_key)
+    return E.build_aes_quipu(inner_header_bytes, inner_body_bytes, key,
+                             title=title, tone=tone)
 
 
 def read_aes_sealed_quipu(outer_header_bytes, outer_body_bytes, password_or_key):
-    """Unwrap a 0x0e 0xae quipu. Returns (inner_header_bytes, inner_body_bytes)
-    in plaintext-quipu shape so existing per-type readers handle the result."""
-    if outer_header_bytes[:6] != b"\xc1\xdd\x00\x01\x0e\xae":
-        raise ValueError("not an AES-sealed quipu (expected c1dd 0001 0e ae prefix)")
-    inner_header = b"\xc1\xdd\x00\x01" + outer_header_bytes[6:]
-    inner_body = aes_decrypt_bytes(outer_body_bytes, password_or_key)
-    return inner_header, inner_body
+    """Unwrap an AES-sealed quipu of EITHER era (canonical 0e <tone> ae, or
+    the pre-canonical 0e ae splice). Returns (inner_header, inner_body) in
+    plaintext-quipu shape so existing per-type readers handle the result."""
+    E = _enc()
+    if E.classify_encrypted(outer_header_bytes) == "legacy_aes":
+        return E.read_legacy_aes_sealed(outer_header_bytes, outer_body_bytes,
+                                        password_or_key)
+    parsed = E.read_encrypted_quipu(outer_header_bytes, outer_body_bytes,
+                                    key=password_or_key)
+    if "inner_header" not in parsed:
+        raise ValueError(f"not an AES-openable quipu (sub {parsed.get('sub_name')})")
+    return parsed["inner_header"], parsed["inner_body"]
 
 
 def build_broadcast_quipu(inner_header_struct, title_field, inner_body_bytes,
                           author_privkey, recipient_pubkeys):
-    """Build a 0x0e 0x03 broadcast-encrypted image quipu (nb17 format).
+    """Broadcast-seal a quipu to N recipients. Emits the CANONICAL ECIES
+    layout (0e <tone> ec 00, body = <N:1> + N×64B envelopes + AES(session,
+    framed inner)) — the pre-canonical nb17 layout is never written again.
 
-    Inputs:
-      inner_header_struct : bytes 4+ of a plaintext image header — i.e.
-        [type][tone][color][LL][WW][B]. Tone is dropped in the broadcast
-        layout (byte 5 in broadcast carries the inner type instead).
-      title_field         : e.g. b'|My Image|', with bordering pipes.
-      inner_body_bytes    : raw inner content (the image bitstream).
-      author_privkey      : eth_keys PrivateKey of the inscriber.
-      recipient_pubkeys   : list of eth_keys PublicKey objects.
-
-    Layout (image case):
-      header: c1dd 0001 0e <inner_type=03> <color> LL WW B Nrecip <title>
-      body  : [Nrecip × 64-byte session-key copies][AES(session, inner_body)]
+    Historical signature, kept for callers:
+      inner_header_struct : bytes 4+ of the plaintext inner header, up to
+                            (not including) the |title| field
+      title_field         : e.g. b'|My Image|', with bordering pipes; also
+                            reused as the outer public title
+      inner_body_bytes    : raw inner content
+      author_privkey      : eth_keys or coincurve PrivateKey
+      recipient_pubkeys   : list of eth_keys or coincurve PublicKey
     """
-    inner_type = inner_header_struct[0:1]
-    structural_tail = inner_header_struct[2:]  # drop tone byte
-    N = len(recipient_pubkeys)
-    if N > 255:
-        raise ValueError("N_recip must fit in a single byte")
-    outer_header = (b"\xc1\xdd\x00\x01\x0e" + inner_type + structural_tail
-                    + bytes([N]) + title_field)
-    session = get_valid_secret()
-    envelopes = b"".join(
-        ecies.sym_encrypt(shared_key(author_privkey, pub), session)
-        for pub in recipient_pubkeys
-    )
-    body_ciphertext = ecies.sym_encrypt(session, inner_body_bytes)
-    return outer_header, envelopes + body_ciphertext
+    E = _enc()
+    inner_header = (b"\xc1\xdd\x00\x01" + bytes(inner_header_struct)
+                    + bytes(title_field))
+    outer_title = bytes(title_field).strip(b"|").decode("utf-8", "replace")
+    return E.build_ecies_quipu(inner_header, inner_body_bytes,
+                               _cc_priv(author_privkey),
+                               [_cc_pub(p) for p in recipient_pubkeys],
+                               title=outer_title)
 
 
 def read_broadcast_quipu(outer_header_bytes, outer_body_bytes, my_privkey, author_pubkey):
-    """Decrypt a 0x0e 0x03 broadcast quipu by trying each envelope against
-    `my_privkey`. Returns (inner_header_bytes, inner_body_bytes) where the
-    inner header is synthesized as plaintext-image-shaped (with a placeholder
-    tone byte of 0x00, since broadcast drops the tone byte at write time)."""
-    if outer_header_bytes[4:5] != b"\x0e":
-        raise ValueError("not an encrypted quipu (byte 4 != 0x0e)")
-    inner_type = outer_header_bytes[5:6]
-    color_lwwb = outer_header_bytes[6:12]
-    N = outer_header_bytes[12]
-    title = outer_header_bytes[13:]
-    inner_header = (b"\xc1\xdd\x00\x01" + inner_type + b"\x00"
-                    + color_lwwb + title)
-    envelopes = [outer_body_bytes[i * 64:(i + 1) * 64] for i in range(N)]
-    cipher_body = outer_body_bytes[N * 64:]
-    sk = shared_key(my_privkey, author_pubkey)
-    last_err = None
-    for env in envelopes:
-        try:
-            session = ecies.sym_decrypt(sk, env)
-            plain = ecies.sym_decrypt(session, cipher_body)
-            return inner_header, plain
-        except Exception as e:
-            last_err = e
-    raise last_err or RuntimeError("no envelope decrypted with this key")
+    """Decrypt a broadcast quipu of EITHER era (canonical 0e <tone> ec, or
+    pre-canonical 0e 03) by trying each envelope against `my_privkey`.
+    Returns (inner_header_bytes, inner_body_bytes); for the legacy layout
+    the inner header is synthesized plaintext-image-shaped (placeholder
+    tone 0x00 — the old writer dropped the tone byte)."""
+    E = _enc()
+    parsed = E.read_encrypted_quipu(outer_header_bytes, outer_body_bytes,
+                                    my_privkey=_cc_priv(my_privkey),
+                                    author_pubkey=_cc_pub(author_pubkey))
+    if "inner_header" not in parsed:
+        raise ValueError(f"could not decrypt (sub {parsed.get('sub_name')})")
+    return parsed["inner_header"], parsed["inner_body"]
 
 
 def build_keydrop_quipu(target_txid_hex, aes_key, title_field=b""):
-    """Build a 0x0e 0x0e 0x0d key-drop quipu releasing `aes_key` for the
-    encrypted quipu at `target_txid_hex`. Body layout per nb18:
-    [32-byte target txid bytes][32-byte AES key]. The txid is stored as
-    bytes.fromhex(displayed_txid) — display-endian, not Bitcoin-internal."""
-    if len(aes_key) != 32:
-        raise ValueError("aes_key must be 32 bytes")
-    header = b"\xc1\xdd\x00\x01\x0e\x0e\x0d" + title_field
-    body = bytes.fromhex(target_txid_hex) + aes_key
-    return header, body
+    """Release `aes_key` for the encrypted quipu at `target_txid_hex`.
+    Emits the CANONICAL keydrop (0e <tone> 0d 00, u16-count body) with a
+    single anonymous drop — the pre-canonical 0e 0e 0d layout is never
+    written again. The txid is display-endian, as before."""
+    E = _enc()
+    title = bytes(title_field).strip(b"|").decode("utf-8", "replace")
+    return E.build_keydrop_quipu([("", target_txid_hex, bytes(aes_key))],
+                                 title=title)
 
 
 def parse_keydrop_quipu(header_bytes, body_bytes):
-    """Inverse of build_keydrop_quipu. Returns (target_txid_hex, aes_key)."""
-    if header_bytes[4:7] != b"\x0e\x0e\x0d":
-        raise ValueError("not a key-drop quipu (header prefix c1dd0001 0e 0e 0d expected)")
-    if len(body_bytes) < 64:
-        raise ValueError("key-drop body too short (need 64 bytes)")
-    return body_bytes[:32].hex(), body_bytes[32:64]
+    """First released (target_txid_hex, aes_key) of a keydrop of EITHER era.
+    (Canonical keydrops may carry several drops — use the canonical module's
+    read_encrypted_quipu for the full list.)"""
+    E = _enc()
+    parsed = E.read_encrypted_quipu(header_bytes, body_bytes)
+    drops = parsed.get("drops")
+    if not drops:
+        raise ValueError(f"not a key-drop quipu (sub {parsed.get('sub_name')})")
+    return drops[0]["ref_txid"], drops[0]["key"]
 
 
 def find_keydrop_for(encrypted_txid_hex, quipus, df_outputs):
-    """Scan a list of quipu rows for a key-drop whose body's first 32 bytes
-    match the given encrypted-quipu txid (display-endian per nb18).
+    """Scan a list of quipu rows for a keydrop (either era) releasing a key
+    for the given encrypted-quipu txid.
 
     `quipus` is an iterable of dict-likes with a 'root_txid' field.
     Returns (keydrop_row, aes_key_bytes) or None.
     """
-    target = bytes.fromhex(encrypted_txid_hex)
+    E = _enc()
     for q in quipus:
         try:
             head_hex, body_hex = read_quipu(q["root_txid"], df_outputs)
+            head = bytes.fromhex(head_hex)
+            if len(head) < 7 or head[4:5] != b"\x0e":
+                continue
+            parsed = E.read_encrypted_quipu(head, bytes.fromhex(body_hex))
         except Exception:
             continue
-        head = bytes.fromhex(head_hex)
-        if len(head) < 7 or head[4:7] != b"\x0e\x0e\x0d":
-            continue
-        body = bytes.fromhex(body_hex)
-        if len(body) < 64:
-            continue
-        if body[:32] == target:
-            return q, body[32:64]
+        for d in parsed.get("drops") or []:
+            if d["ref_txid"] == encrypted_txid_hex:
+                return q, d["key"]
     return None
 
 
 def apply_keydrop(target_header_bytes, target_body_bytes, aes_key):
-    """Apply a released AES key to an encrypted quipu's header+body. Handles
-    both 0e 03 (broadcast — skip N_recip envelopes) and 0e ae (AES-sealed —
-    decrypt directly) targets. Returns plaintext (inner_header, inner_body)."""
-    if target_header_bytes[4:5] != b"\x0e":
-        raise ValueError("target is not encrypted (byte 4 != 0x0e)")
-    sub = target_header_bytes[5:6]
-    if sub == b"\xae":
-        return read_aes_sealed_quipu(target_header_bytes, target_body_bytes, aes_key)
-    if sub == b"\x03":
-        N = target_header_bytes[12]
-        cipher_body = target_body_bytes[N * 64:]
-        plain = ecies.sym_decrypt(aes_key, cipher_body)
-        inner_type = target_header_bytes[5:6]
-        color_lwwb = target_header_bytes[6:12]
-        title = target_header_bytes[13:]
-        inner_header = (b"\xc1\xdd\x00\x01" + inner_type + b"\x00"
-                        + color_lwwb + title)
-        return inner_header, plain
-    raise ValueError(f"unsupported encrypted sub-family byte: {sub.hex()}")
+    """Apply a released 32-byte key to a sealed quipu of EITHER era
+    (canonical ae/ec, legacy broadcast, legacy AES splice). Returns
+    plaintext (inner_header, inner_body)."""
+    return _enc().open_with_key(target_header_bytes, target_body_bytes, aes_key)
